@@ -64,46 +64,26 @@ Add these repository secrets:
 - `EC2_SSH_KEY`: the private SSH key for the deployment user.
 - `EC2_KNOWN_HOSTS`: the verified SSH host-key line(s) for the EC2 instance.
 
-The workflow expects the SSH user to be able to write to `EC2_APP_DIR` and to run
-`sudo systemctl restart livekit-meet.service` without a password. Do not store the
-LiveKit API credentials in GitHub or in the deployment bundle; create
-`/etc/livekit-meet.env` on the instance with `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`,
-and `LIVEKIT_URL`, and keep that file readable only by root.
+The workflow expects `EC2_USER` to be the same Ubuntu user that owns the PM2
+process named `livekit-meet`, and to be able to write to `EC2_APP_DIR`. The PM2
+process must run the standalone server through
+`$EC2_APP_DIR/current/server.js`, so switching releases updates the app it starts.
+Do not store LiveKit API credentials in GitHub or in the deployment bundle; set
+`LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, and `LIVEKIT_URL` in the PM2 process
+environment on the instance.
 
 ### EC2 setup
 
-Install Node.js 22 and `rsync` on the instance. Create the deployment directory
-and make it writable by the deployment user (the directory must include
-`$EC2_APP_DIR/releases`). Create a systemd unit at
-`/etc/systemd/system/livekit-meet.service`, replacing
-`ubuntu` and the app path below if your SSH user or `EC2_APP_DIR` differs:
+Install Node.js 22, `rsync`, and PM2 on the instance. Create `EC2_APP_DIR` and
+make it writable by the PM2 user. Configure the existing PM2 process named
+`livekit-meet` to run
+`$EC2_APP_DIR/current/server.js` with `$EC2_APP_DIR/current` as its working
+directory, `PORT=3000`, and `HOSTNAME=127.0.0.1`. Keep the LiveKit credentials in
+that process's environment, not in the repository.
 
-```ini
-[Unit]
-Description=LiveKit Meet
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/apps/livekit-meet/current
-EnvironmentFile=/etc/livekit-meet.env
-Environment=NODE_ENV=production
-Environment=PORT=3000
-Environment=HOSTNAME=127.0.0.1
-ExecStart=/usr/bin/node /home/ubuntu/apps/livekit-meet/current/server.js
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Create `/etc/livekit-meet.env` with the required LiveKit values, then enable the
-service with `sudo systemctl daemon-reload && sudo systemctl enable livekit-meet`.
-Use `visudo` to allow the deployment user to restart only this service without a
-password (for the default `ubuntu` user, add
-`ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl restart livekit-meet.service`).
-Put Nginx (or another TLS reverse proxy) in front of port 3000.
+Run `pm2 startup` once on the instance and execute the exact `sudo` command it
+prints, then run `pm2 save` so the process is restored after an EC2 reboot. Put
+Nginx (or another TLS reverse proxy) in front of port 3000.
 Restrict SSH ingress in the EC2 security group to trusted sources.
 
 The workflow runs from the `main` branch. If your personal repository uses a
