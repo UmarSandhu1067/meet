@@ -43,8 +43,9 @@ Steps to get a local dev setup up and running:
 
 ## Deploy to AWS EC2
 
-The GitHub Actions workflow in `.github/workflows/deploy-ec2.yaml` builds the Next.js
-standalone app and deploys it whenever `main` is updated (or when run manually).
+The GitHub Actions workflow in `.github/workflows/deploy-ec2.yaml` checks out Git
+LFS assets, builds the Next.js standalone app, and deploys it whenever `main` is
+updated (or when run manually).
 It connects to an Ubuntu EC2 instance over SSH and switches the `current` release
 only after uploading the build.
 
