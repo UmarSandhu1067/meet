@@ -1,0 +1,82 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build standalone app
+        run: |
+          pnpm build
+          mkdir -p deploy/.next
+          cp -R .next/standalone/. deploy/
+          cp -R .next/static deploy/.next/static
+          if [ -d public ]; then cp -R public deploy/public; fi
+
+      - name: Configure SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        run: |
+          : "${EC2_SSH_KEY:?Add the EC2_SSH_KEY repository secret}"
+          : "${EC2_KNOWN_HOSTS:?Add the EC2_KNOWN_HOSTS repository secret}"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_deploy_key
+          chmod 600 ~/.ssh/ec2_deploy_key
+          printf '%s\n' "$EC2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload and activate release
+        env:
+          EC2_HOST: ${{ vars.EC2_HOST }}
+          EC2_USER: ${{ vars.EC2_USER }}
+          EC2_APP_DIR: ${{ vars.EC2_APP_DIR }}
+        run: |
+          : "${EC2_HOST:?Set the EC2_HOST repository variable}"
+          : "${EC2_USER:?Set the EC2_USER repository variable}"
+          : "${EC2_APP_DIR:?Set the EC2_APP_DIR repository variable}"
+          ssh_options=(-i "$HOME/.ssh/ec2_deploy_key" -o IdentitiesOnly=yes)
+          target="$EC2_USER@$EC2_HOST"
+          release_dir="$EC2_APP_DIR/releases/$GITHUB_SHA"
+          ssh "${ssh_options[@]}" "$target" "mkdir -p '$EC2_APP_DIR/releases'"
+          rsync -az --delete -e "ssh -i $HOME/.ssh/ec2_deploy_key -o IdentitiesOnly=yes" \
+            deploy/ "$target:$release_dir/"
+          printf -v remote_command 'bash -s -- %q %q' "$EC2_APP_DIR" "$GITHUB_SHA"
+          ssh "${ssh_options[@]}" "$target" "$remote_command" <<'REMOTE'
+          set -euo pipefail
+          app_dir="$1"
+          release="$2"
+          previous_release="$(readlink -f "$app_dir/current" || true)"
+
+          ln -sfn "$app_dir/releases/$release" "$app_dir/current"
+          if ! sudo systemctl restart livekit-meet.service; then
+            if [ -n "$previous_release" ]; then
+              ln -sfn "$previous_release" "$app_dir/current"
+              if ! sudo systemctl restart livekit-meet.service; then
+                echo "Deployment failed; the previous release was restored, but the service could not be restarted." >&2
+                exit 1
+              fi
+            fi
+            exit 1
+          fi
+          REMOTE
